@@ -5,7 +5,9 @@ import { useTranslation } from "react-i18next"
 
 import { DownloadState, SyncResult } from "../../util"
 import { NewFilesList, Progress } from "../../modules/download"
+import { SyncConflict } from "../../modules/sync-state"
 import { NewFilesModal } from "./NewFilesModal"
+import { ConflictsModal } from "./ConflictsModal"
 import { LoginContext } from "../LoginContext"
 import { SyncProgressWrap } from "../components/SyncProgressWrap"
 
@@ -27,9 +29,11 @@ export const SyncProgress: FC = props => {
   const [syncResult, setSyncResult] = useState<SyncResult>()
 
   const [viewingFiles, setViewingFiles] = useState(false)
-  const [newFilesList, setNewFilesList] = useState<NewFilesList>()
+  const [newFilesList, setNewFilesList] = useState<NewFilesList>({})
   const [viewingPrevFiles, setViewingPrevFiles] = useState(false)
-  const [prevNewFilesList, setPrevNewFilesList] = useState<NewFilesList>()
+  const [prevNewFilesList, setPrevNewFilesList] = useState<NewFilesList>({})
+  const [conflicts, setConflicts] = useState<SyncConflict[]>([])
+  const [viewingConflicts, setViewingConflicts] = useState(false)
 
   useEffect(() => {
     ipcRenderer
@@ -47,6 +51,9 @@ export const SyncProgress: FC = props => {
     )
     ipcRenderer.on("new-files", (e, files: NewFilesList) =>
       setNewFilesList(files),
+    )
+    ipcRenderer.on("conflicts", (e, nextConflicts: SyncConflict[]) =>
+      setConflicts(nextConflicts),
     )
   }, [])
 
@@ -80,6 +87,20 @@ export const SyncProgress: FC = props => {
                   disabled={numfiles === 0}
                 >
                   {t("viewFiles")}
+                </button>
+              </div>
+            ) : syncResult === SyncResult.successWithConflicts ? (
+              <div className="new-files">
+                <h3>
+                  {t("resultMessage.successWithConflicts", {
+                    count: conflicts.length,
+                  })}
+                </h3>
+                <button
+                  className="confirm-button"
+                  onClick={() => setViewingConflicts(true)}
+                >
+                  {t("viewConflicts")}
                 </button>
               </div>
             ) : (
@@ -150,6 +171,13 @@ export const SyncProgress: FC = props => {
         <NewFilesModal
           files={prevNewFilesList}
           onClose={() => setViewingPrevFiles(false)}
+        />
+      ) : undefined}
+      {viewingConflicts ? (
+        <ConflictsModal
+          conflicts={conflicts}
+          onClose={() => setViewingConflicts(false)}
+          onResolved={setConflicts}
         />
       ) : undefined}
     </div>

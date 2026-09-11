@@ -11,6 +11,7 @@ import { storeIsReady, store } from "./store"
 import { loginManager } from "./login"
 
 import { DownloadState, SyncResult } from "../util"
+import { hashFile, resolveInside, syncState, SyncConflict } from "./sync-state"
 
 const { log, error, debug } = createLogger("DownloadManager")
 
@@ -36,6 +37,8 @@ export type NewFilesList = {
   }[]
 }
 
+export type ConflictList = SyncConflict[]
+
 // just use this error to encapsulate all errors that can happen while writing a file to disk
 class FSError extends Error {
   constructor() {
@@ -49,6 +52,7 @@ export declare interface DownloadManager {
   on(event: "stop", listener: (result: SyncResult) => void): this
   on(event: "state", listener: (state: DownloadState) => void): this
   on(event: "new-files", listener: (files: NewFilesList) => void): this
+  on(event: "conflicts", listener: (conflicts: ConflictList) => void): this
 }
 
 export class DownloadManager extends EventEmitter {
@@ -134,7 +138,10 @@ export class DownloadManager extends EventEmitter {
     const result = await this._sync()
     log(`finished syncing with result:  ${SyncResult[result]}`)
 
-    if (result === SyncResult.success) {
+    if (
+      result === SyncResult.success ||
+      result === SyncResult.successWithConflicts
+    ) {
       // update the last synced timestamp only if the sync was successful
       store.data.persistence.lastSynced = Date.now()
       store.write()
@@ -142,15 +149,12 @@ export class DownloadManager extends EventEmitter {
     this.syncing = false
     this.updateState(DownloadState.idle)
     this.emit("stop", result)
-    return result === SyncResult.success
+    return (
+      result === SyncResult.success ||
+      result === SyncResult.successWithConflicts
+    )
   }
 
-  /**
-   * This function is a bit of a mess. Downloads each file, maintaining a cue with each concurrent
-   * download. Catches errors that can occurr while downloading the file and returns a sync result
-   * based on that.
-   * @returns A promise that resolves to the {@link SyncResult} relative to what happened in the sync
-   */
   private async _sync(): Promise<SyncResult> {
     await storeIsReady() // just to be sure that the settings are initialized
     const { downloadPath } = store.data.settings
@@ -160,148 +164,35 @@ export class DownloadManager extends EventEmitter {
 
       this.updateState(DownloadState.downloading)
       const newFilesList: NewFilesList = {}
+      const conflicts: ConflictList = []
       this.currentDownloads = []
       this.total = files.reduce((tot, f) => tot + f.filesize, 0)
       this.totalUntilNow = 0
 
-      // this function gets called recursively each time to download a new file
-      const pushNewRequest = async () => {
-        if (this.stopped) return
-        const file = files.pop() // pop a file from the list,
-
-        const fullpath = path.join(file.filepath, file.filename)
-        const absolutePath = path.join(downloadPath, fullpath)
-
-        // make the request to get the file
-        const reqAc = new AbortController()
-        const request = got.stream(file.fileurl, {
-          searchParams: {
-            token: loginManager.token, // for some god forsaken reason it's token and not wstoken
-          },
-        })
-
-        // prepare the download object, this is what will be pushed in the current downloads
-        // to keep track of the progress
-        const download: (typeof this.currentDownloads)[number] = {
-          cancel: () => reqAc.abort(),
-          progress: {
-            absolutePath,
-            filename: file.filename,
-            downloaded: 0,
-            total: file.filesize,
-          },
-        }
-        this.currentDownloads.push(download)
-
-        request.on("downloadProgress", ({ transferred }) => {
-          // update the download object on each chunk
-          download.progress.downloaded = transferred
-        })
-
-        try {
-          await fs.mkdir(path.dirname(absolutePath), { recursive: true })
-          await stream.pipeline(request, createWriteStream(absolutePath), {
-            signal: reqAc.signal,
-          })
-          await fs.utimes(
-            absolutePath,
-            new Date(),
-            new Date(file.timemodified * 1000),
-          )
-        } catch (e) {
-          // 404 error handling: skip missing files on the server
-          if (
-            e.name === "HTTPError" &&
-            (e as HTTPError).response?.statusCode === 404
-          ) {
-            error(`Ignored missing file (404 Not Found): ${fullpath}`)
-
-            // remove the empty file that might have been created on disk
-            await fs.rm(absolutePath, { force: true }).catch(() => {})
-
-            // remove from current downloads and proceed with the next file
-            const idx = this.currentDownloads.indexOf(download)
-            if (idx !== -1) this.currentDownloads.splice(idx, 1)
-
-            if (files.length) await pushNewRequest()
-            return // exit gracefully without crashing the sync process
-          }
-
-          switch (e.name) {
-            case "AbortError":
-              debug(`Cancelled request for file ${fullpath}`)
-              throw e
-            case "RequestError":
-            case "HTTPError":
-            case "TimeoutError":
-              throw e
-          }
-
-          if (e.code === "EISDIR") {
-            try {
-              await fs.rm(e.path, { recursive: true, force: true })
-              files.push(file) // this download should really be tried again
-              return
-            } catch (e) {
-              error("\n")
-              error(
-                "Error while removing a folder that shouldnt exist! That shouldn't happen :c",
-              )
-              error(
-                "If you see this error just manually delete the download folder",
-              )
-              error(e)
-              error(`Path: ${e.path}`)
-              error("\n")
-            }
-          }
-
-          // yes i know, i catch an error just to throw it, but this way anything that
-          // happens while writing will just be an "FSError" and nothing else, and will be
-          // properly logged (which doesn't need to happen in case of a network error)
-          error("An error occured while writing a file to disk:")
-          error(`Current state: ${DownloadState[this.currentState]}`)
-          error(e)
-          throw new FSError() // unifies all possible errors to an FSError
-        }
+      for (const file of files) {
+        if (this.stopped) return SyncResult.stopped
+        const existingEntry = await syncState.entry(downloadPath, file.remoteId)
+        const result = await this.syncFile(file, downloadPath)
+        if (result.conflict) conflicts.push(result.conflict)
+        if (!result.downloaded) continue
 
         if (!newFilesList[file.coursename]) newFilesList[file.coursename] = []
         newFilesList[file.coursename].push({
           filename: file.filename,
-          absolutePath,
+          absolutePath: result.absolutePath,
           filesize: file.filesize,
-          updated: file.updating ?? false,
+          updated: Boolean(existingEntry),
         })
-
         this.totalUntilNow += file.filesize
-        const idx = this.currentDownloads.indexOf(download)
-        if (idx !== -1) this.currentDownloads.splice(idx, 1)
-        if (files.length) await pushNewRequest()
       }
-
-      // Push 3 requests to kickstart the download process
-      const requests: Promise<void>[] = [] // the current pushed requests
-      let concurrentDownloads = store.data.settings.maxConcurrentDownloads
-      if (isNaN(concurrentDownloads) || concurrentDownloads < 1)
-        concurrentDownloads = 1 // better safe then sorry
-      concurrentDownloads = Math.min(concurrentDownloads, files.length)
-
-      debug(
-        `Beginning download with ${concurrentDownloads} concurrent downloads`,
-      )
-      for (let i = 0; i < concurrentDownloads; i++) {
-        requests.push(pushNewRequest())
-      }
-
-      // await the concurrent requests, each will internally await for the next file once
-      // the first is finished downloading, so they will only resolve when all downloads are
-      // completed
-      await Promise.all(requests)
 
       this.emit("new-files", newFilesList)
+      if (conflicts.length) this.emit("conflicts", conflicts)
 
       if (this.stopped) return SyncResult.stopped
-      return SyncResult.success
+      return conflicts.length
+        ? SyncResult.successWithConflicts
+        : SyncResult.success
     } catch (e) {
       // other request chains other than the one which threw the error need to be stopped
       this.cancelAllRequests()
@@ -327,6 +218,137 @@ export class DownloadManager extends EventEmitter {
     }
   }
 
+  private revision(file: FileInfo) {
+    return `${file.timemodified}:${file.filesize}:${file.fileurl}`
+  }
+
+  private async syncFile(file: FileInfo, downloadPath: string) {
+    const relativePath = path.join(file.filepath, file.filename)
+    const absolutePath = resolveInside(downloadPath, relativePath)
+    const previous = await syncState.entry(downloadPath, file.remoteId)
+    const localSha256 = await hashFile(absolutePath).catch(
+      (): undefined => undefined,
+    )
+    const staged = await this.downloadToStage(file, absolutePath)
+    if (!staged) return { downloaded: false, absolutePath }
+
+    const remoteSha256 = await hashFile(staged)
+    const remoteRevision = this.revision(file)
+    const saveEntry = async () =>
+      syncState.upsertEntry(downloadPath, {
+        remoteId: file.remoteId,
+        relativePath,
+        baseSha256: remoteSha256,
+        remoteRevision,
+      })
+
+    if (!previous) {
+      if (!localSha256) {
+        await fs.rename(staged, absolutePath)
+        await saveEntry()
+        return { downloaded: true, absolutePath }
+      }
+      if (localSha256 === remoteSha256) {
+        await fs.rm(staged, { force: true })
+        await saveEntry()
+        return { downloaded: false, absolutePath }
+      }
+    } else if (!localSha256 && remoteSha256 === previous.baseSha256) {
+      await fs.rename(staged, absolutePath)
+      await saveEntry()
+      return { downloaded: true, absolutePath }
+    } else if (remoteSha256 === previous.baseSha256) {
+      await fs.rm(staged, { force: true })
+      await saveEntry()
+      return { downloaded: false, absolutePath }
+    } else if (localSha256 === previous.baseSha256) {
+      await fs.rename(staged, absolutePath)
+      await saveEntry()
+      return { downloaded: true, absolutePath }
+    }
+
+    const incomingPath = resolveInside(
+      downloadPath,
+      path.join(
+        ".webeep-sync-conflicts",
+        `${Date.now()}-${file.remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`,
+        relativePath,
+      ),
+    )
+    await fs.mkdir(path.dirname(incomingPath), { recursive: true })
+    await fs.rename(staged, incomingPath)
+    const conflict: SyncConflict = {
+      id: `${file.remoteId}:${remoteRevision}`,
+      remoteId: file.remoteId,
+      relativePath,
+      incomingPath,
+      baseSha256: previous?.baseSha256,
+      localSha256,
+      remoteSha256,
+      remoteRevision,
+      detectedAt: Date.now(),
+    }
+    await syncState.addConflict(downloadPath, conflict)
+    return { downloaded: false, absolutePath, conflict }
+  }
+
+  private async downloadToStage(file: FileInfo, absolutePath: string) {
+    const fullpath = path.join(file.filepath, file.filename)
+    const staged = `${absolutePath}.webeep-sync-${process.pid}-${Date.now()}.tmp`
+    const controller = new AbortController()
+    const request = got.stream(file.fileurl, {
+      searchParams: { token: loginManager.token },
+    })
+    const download: (typeof this.currentDownloads)[number] = {
+      cancel: () => controller.abort(),
+      progress: {
+        absolutePath,
+        filename: file.filename,
+        downloaded: 0,
+        total: file.filesize,
+      },
+    }
+    this.currentDownloads.push(download)
+    request.on(
+      "downloadProgress",
+      ({ transferred }) => (download.progress.downloaded = transferred),
+    )
+    try {
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true })
+      await stream.pipeline(
+        request,
+        createWriteStream(staged, { flags: "wx" }),
+        {
+          signal: controller.signal,
+        },
+      )
+      await fs.utimes(staged, new Date(), new Date(file.timemodified * 1000))
+      return staged
+    } catch (e) {
+      await fs.rm(staged, { force: true }).catch(() => {})
+      if (
+        e.name === "HTTPError" &&
+        (e as HTTPError).response?.statusCode === 404
+      ) {
+        error(`Ignored missing file (404 Not Found): ${fullpath}`)
+        return
+      }
+      switch (e.name) {
+        case "AbortError":
+        case "RequestError":
+        case "HTTPError":
+        case "TimeoutError":
+          throw e
+      }
+      error("An error occured while writing a file to disk:")
+      error(e)
+      throw new FSError()
+    } finally {
+      const idx = this.currentDownloads.indexOf(download)
+      if (idx !== -1) this.currentDownloads.splice(idx, 1)
+    }
+  }
+
   /**
    * constructs the progress object, calculating how download progress until now
    * @returns The Progress object that needs to be sent to the frontend
@@ -346,8 +368,7 @@ export class DownloadManager extends EventEmitter {
 
   /**
    * Gets all files that need to be downloaded, gets all courses from the moodle API and for each
-   * file gets all files. Then checks for each file stats in the filesystem to see if a file has
-   * already been synced.
+   * file gets all files. The manifest determines whether the remote revision needs processing.
    * @returns A promise that resolves to an array of FileInfos with the files that need to be downloaded
    */
   async getFilesToDownload(): Promise<FileInfo[]> {
@@ -366,28 +387,28 @@ export class DownloadManager extends EventEmitter {
       syncableCourses.map(c => moodleClient.getFileInfos(c)),
     )
 
-    // honestly, this takes around 20ms total, it's not even worth to do in parallel
     for (const files of courseFiles)
       for (const file of files) {
-        const fullpath = path.join(file.filepath, file.filename)
-        const absolutePath = path.join(downloadPath, fullpath)
-
-        try {
-          const stats = await fs.stat(absolutePath)
-          if (
-            stats.mtime.getTime() / 1000 !== file.timemodified ||
-            (file.filesize !== 0 && stats.size !== file.filesize)
-          ) {
-            // if the file is there, the size on webeep is not 0 and
-            // it does not have the same size and last modified
-            // time as on webeep, download it again
-            file.updating = true
-            filesToDownload.push(file)
-          }
-        } catch (e) {
-          // if the stats could not be retrieved, the file should be downloaded
+        const previous = await syncState.entry(downloadPath, file.remoteId)
+        const target = resolveInside(
+          downloadPath,
+          path.join(file.filepath, file.filename),
+        )
+        const missingLocalFile = await fs
+          .stat(target)
+          .then(() => false)
+          .catch(() => true)
+        if (
+          !previous ||
+          missingLocalFile ||
+          (previous.remoteRevision !== this.revision(file) &&
+            !(await syncState.hasConflict(
+              downloadPath,
+              file.remoteId,
+              this.revision(file),
+            )))
+        )
           filesToDownload.push(file)
-        }
       }
 
     return filesToDownload
@@ -397,6 +418,20 @@ export class DownloadManager extends EventEmitter {
     await storeIsReady()
     store.data.settings.autosyncEnabled = sync
     store.write()
+  }
+
+  async getConflicts() {
+    await storeIsReady()
+    return syncState.conflicts(store.data.settings.downloadPath)
+  }
+
+  async resolveConflict(id: string, resolution: "keep-local" | "use-remote") {
+    await storeIsReady()
+    return syncState.resolveConflict(
+      store.data.settings.downloadPath,
+      id,
+      resolution,
+    )
   }
 }
 

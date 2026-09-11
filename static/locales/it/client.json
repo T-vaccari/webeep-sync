@@ -45,8 +45,11 @@
     "prevNewFiles_one": "{{count}} nuovo file scaricato in background",
     "prevNewFiles_other": "{{count}} nuovi file scaricati in background",
     "viewFiles": "Mostra i file",
+    "viewConflicts": "Gestisci conflitti",
     "resultMessage": {
       "success": "Tutto sincronizzato!",
+      "successWithConflicts_one": "Sincronizzazione completata: {{count}} modifica locale è stata preservata",
+      "successWithConflicts_other": "Sincronizzazione completata: {{count}} modifiche locali sono state preservate",
       "stopped": "Sincronizzazione annullata",
       "networkError": "Impossibile raggiungere il server, controlla la tua connessione o prova più tardi",
       "fsError": "Impossibile salvare il file su disco: c'è qualche file aperto che va sovrascritto oppure non hai i permessi di scrittura nella cartella dei download",
@@ -58,6 +61,13 @@
       "fetchingFiles": "Cerco nuovi file da scaricare...",
       "downloading": "Scarico..."
     }
+  },
+  "conflicts": {
+    "title_one": "1 conflitto di sincronizzazione",
+    "title_other": "{{count}} conflitti di sincronizzazione",
+    "revealIncoming": "Mostra versione in arrivo",
+    "keepLocal": "Mantieni versione locale",
+    "useRemote": "Usa versione in arrivo"
   },
   "newFiles": {
     "newFiles_one": "{{count}} nuovo file scaricato",

@@ -197,6 +197,10 @@ downloadManager.on("new-files", files => {
   }
 })
 
+downloadManager.on("conflicts", async () => {
+  send("conflicts", await downloadManager.getConflicts())
+})
+
 moodleClient.on("courses", async c => send("courses", c))
 let notificationToBeOpened: number | null = null
 moodleClient.on("notifications", async notifications => {
@@ -248,7 +252,7 @@ i18n.on("languageChanged", lng =>
 let updateAvailable = false
 
 autoUpdater.setFeedURL({
-  url: `https://update.electronjs.org/toto04/webeep-sync/${process.platform}-${
+  url: `https://update.electronjs.org/T-vaccari/webeep-sync/${process.platform}-${
     process.arch
   }/${app.getVersion()}`,
 })
@@ -414,6 +418,7 @@ ipcMain.on("get-context", async e => {
     bundle: i18n.getResourceBundle(lng, "client"),
   })
   e.reply("courses", moodleClient.getCourses())
+  e.reply("conflicts", await downloadManager.getConflicts())
 
   if (updateAvailable) e.reply("update-available")
 })
@@ -437,6 +442,11 @@ ipcMain.on(
 
 ipcMain.on("sync-start", e => downloadManager.sync())
 ipcMain.on("sync-stop", e => downloadManager.stop())
+
+ipcMain.handle("resolve-conflict", async (e, id: string, resolution) => {
+  await downloadManager.resolveConflict(id, resolution)
+  return downloadManager.getConflicts()
+})
 
 ipcMain.on("sync-settings", async e => {
   await storeIsReady()

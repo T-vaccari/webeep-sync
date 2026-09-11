@@ -11,6 +11,7 @@ export enum DownloadState {
 
 export enum SyncResult {
   success,
+  successWithConflicts,
   alreadySyncing,
   stopped,
   networkError,

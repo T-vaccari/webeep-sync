@@ -28,6 +28,9 @@ export interface Course {
 }
 
 export interface FileInfo {
+  courseid: number
+  moduleid: number
+  remoteId: string
   coursename: string
   filename: string
   filepath: string
@@ -299,7 +302,7 @@ export class MoodleClient extends EventEmitter {
 
     for (const contentGroup of contents) {
       for (const module of contentGroup.modules) {
-        const { name: modulename, contents, modname } = module
+        const { id: moduleid, name: modulename, contents, modname } = module
 
         // if the modname is excluded or if the module is empty, skip this module,
         if (EXCLUDED_MODNAMES.includes(modname)) continue
@@ -355,6 +358,9 @@ export class MoodleClient extends EventEmitter {
           }
 
           files.push({
+            courseid: course.id,
+            moduleid,
+            remoteId: `${course.id}:${moduleid}:${file.fileurl}`,
             coursename: course.name,
             filename,
             filepath,

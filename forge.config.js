@@ -7,22 +7,24 @@ module.exports = {
   packagerConfig: {
     icon: path.resolve(__dirname, "static/icons/icon"),
     appBundleId: "org.polinetwork.webeep-sync",
-    osxSign: {
-      identity:
-        process.env.MACOS_IDENTITY ||
-        "Developer ID Application: PoliNetwork APS (842636PS9J)",
-      "hardened-runtime": true,
-      entitlements: "entitlements.plist",
-      "entitlements-inherit": "entitlements.plist",
-      "signature-flags": "library",
-      "gatekeeper-assess": false,
-    },
-    osxNotarize: {
-      appleId: process.env.APPLEID,
-      appleIdPassword: process.env.APPLEPWD,
-      teamId: process.env.TEAMID,
-      ascProvider: process.env.TEAMID,
-    },
+    ...(process.env.MACOS_IDENTITY
+      ? {
+          osxSign: {
+            identity: process.env.MACOS_IDENTITY,
+            "hardened-runtime": true,
+            entitlements: "entitlements.plist",
+            "entitlements-inherit": "entitlements.plist",
+            "signature-flags": "library",
+            "gatekeeper-assess": false,
+          },
+          osxNotarize: {
+            appleId: process.env.APPLEID,
+            appleIdPassword: process.env.APPLEPWD,
+            teamId: process.env.TEAMID,
+            ascProvider: process.env.TEAMID,
+          },
+        }
+      : { osxSign: false }),
   },
   makers: [
     {
@@ -128,7 +130,7 @@ module.exports = {
       config: {
         repository: {
           name: "webeep-sync",
-          owner: "toto04",
+          owner: "T-vaccari",
         },
         prerelease: !!process.env.PRERELEASE,
         draft: true,
