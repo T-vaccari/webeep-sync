@@ -36,6 +36,20 @@
 
 ### [🇬🇧 click here for English version](https://github.com/toto04/webeep-sync#english-version)
 
+## Nota su questa fork
+
+Questo repository è una fork personale di [toto04/webeep-sync](https://github.com/toto04/webeep-sync).
+Il progetto originale e il suo autore restano accreditati; qui è stata aggiunta la sincronizzazione
+sicura dei file locali:
+
+- una modifica fatta sul Mac non viene sovrascritta silenziosamente;
+- se sia il file locale sia quello su WeBeep sono cambiati, l'app chiede se mantenere il locale o
+  usare l'aggiornamento remoto.
+
+I link alle release riportati più sotto sono quelli del progetto upstream e non includono questa
+funzionalità. Per usare questa fork su macOS, clonala, esegui `pnpm install` e `pnpm package`, poi
+trascina `out/WeBeep Sync-darwin-arm64/WeBeep Sync.app` in `Applicazioni`.
+
 WeBeep Sync è una semplice app che serve per tenere sincronizzati tutti i tuoi file di WeBeep,
 User-Friendly e senza compromessi.
 
